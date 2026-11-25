@@ -5,6 +5,7 @@ import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.media.MediaPlayer
 import android.net.Uri
 import android.os.Bundle
 import android.provider.OpenableColumns
@@ -25,6 +26,7 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.documentfile.provider.DocumentFile
+import java.io.File
 import java.util.concurrent.Executors
 
 /** WinRAR / RAR-for-Android style UI: blue toolbar, file list with type badges, bottom action bar. */
@@ -43,6 +45,10 @@ class MainActivity : ComponentActivity() {
     private var packMkh: Uri? = null
     private var pendingItems: List<Mkp.Entry> = emptyList()
     private var busy = false
+    private var pendingMp3: List<Mkp.Entry> = emptyList()
+    private var player: MediaPlayer? = null
+    private var playingIdx = -1
+    private var playToken = 0
 
     private lateinit var title: TextView
     private lateinit var subtitle: TextView
@@ -69,6 +75,10 @@ class MainActivity : ComponentActivity() {
 
     private val pickExtractDir = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         if (uri != null) extractTo(uri)
+    }
+
+    private val pickMp3Dir = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        if (uri != null) exportMp3(uri)
     }
 
     private val pickPackDir = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
@@ -161,6 +171,7 @@ class MainActivity : ComponentActivity() {
         }
         bottom.addView(navItem(R.drawable.ic_add, "Add") { pickPackDir.launch(null) })
         bottom.addView(navItem(R.drawable.ic_extract, "Extract to…") { extractClick() })
+        bottom.addView(navItem(R.drawable.ic_music, "To MP3") { mp3Click() })
         bottom.addView(navItem(R.drawable.ic_select_all, "Select all") { toggleSelectAll() })
         root.addView(bottom, LinearLayout.LayoutParams(-1, dp(60)))
 
@@ -216,6 +227,7 @@ class MainActivity : ComponentActivity() {
         val nameView = TextView(ctx)
         val info = TextView(ctx)
         val box = CheckBox(ctx)
+        val play = ImageView(ctx)
 
         init {
             orientation = HORIZONTAL
@@ -238,16 +250,29 @@ class MainActivity : ComponentActivity() {
             info.apply { setTextColor(grey); setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f) }
             col.addView(nameView); col.addView(info)
             box.apply { isClickable = false; isFocusable = false; buttonTintList = ColorStateList.valueOf(primary) }
-            addView(badge); addView(col); addView(box)
+            play.apply {
+                setColorFilter(primary); setPadding(dp(8), dp(8), dp(8), dp(8))
+                isFocusable = false
+                background = ripple()
+                layoutParams = LayoutParams(dp(44), dp(44))
+            }
+            addView(badge); addView(col); addView(play); addView(box)
         }
 
-        fun bind(e: Mkp.Entry, isChecked: Boolean) {
+        fun bind(e: Mkp.Entry, isChecked: Boolean, pos: Int) {
             val ext = e.name.substringAfterLast('.', "")
             badge.text = if (ext.isEmpty()) "FILE" else ext.uppercase().take(4)
             badge.background = GradientDrawable().apply { cornerRadius = dp(8).toFloat(); setColor(extColor(ext)) }
             nameView.text = e.name
             info.text = human(e.size)
             box.isChecked = isChecked
+            if (Snd.isAudio(e.name)) {
+                play.visibility = View.VISIBLE
+                play.setImageResource(if (playingIdx == pos) R.drawable.ic_pause else R.drawable.ic_play)
+                play.setOnClickListener { togglePlay(pos) }
+            } else {
+                play.visibility = View.GONE
+            }
             setBackgroundColor(if (isChecked) selectedBg else Color.WHITE)
         }
     }
@@ -258,7 +283,7 @@ class MainActivity : ComponentActivity() {
         override fun getItemId(position: Int) = position.toLong()
         override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
             val row = (convertView as? Row) ?: Row(this@MainActivity)
-            row.bind(entries[position], checked.contains(position))
+            row.bind(entries[position], checked.contains(position), position)
             return row
         }
     }
@@ -303,13 +328,106 @@ class MainActivity : ComponentActivity() {
         title.text = if (has) "$baseName.mkp" else "MKP Arhiver"
         if (busy) return
         subtitle.text = when {
+            playingIdx >= 0 && playingIdx < entries.size -> "Playing: ${entries[playingIdx].name}"
             !has -> "Archiver for .mkh / .mkp"
             checked.isEmpty() -> "${entries.size} files · ${human(entries.sumOf { it.size })}"
             else -> "${checked.size} selected · ${human(checked.sumOf { entries[it].size })}"
         }
     }
 
+    // ---- playback ------------------------------------------------------------------------
+
+    private fun stopPlayback() {
+        playToken++
+        player?.let { try { it.stop() } catch (_: Exception) {}; it.release() }
+        player = null
+        playingIdx = -1
+        adapter.notifyDataSetChanged(); refresh()
+    }
+
+    private fun togglePlay(pos: Int) {
+        if (busy) return
+        if (playingIdx == pos) return stopPlayback()
+        stopPlayback()
+        val e = entries[pos]
+        val token = playToken
+        subtitle.text = "Loading ${e.name}…"
+        io.execute {
+            try {
+                val f = File(cacheDir, "play.ogg")
+                Mkp.extractToFile(contentResolver, mkp!!, e, f)
+                ui {
+                    if (token != playToken) return@ui
+                    val mp = MediaPlayer()
+                    player = mp
+                    mp.setOnPreparedListener {
+                        if (token == playToken) { it.start(); playingIdx = pos; adapter.notifyDataSetChanged(); refresh() }
+                    }
+                    mp.setOnCompletionListener { if (token == playToken) stopPlayback() }
+                    mp.setOnErrorListener { _, _, _ ->
+                        if (token == playToken) { stopPlayback(); toast("Cannot play ${e.name}", true) }
+                        true
+                    }
+                    try { mp.setDataSource(f.path); mp.prepareAsync() }
+                    catch (ex: Exception) { stopPlayback(); toast("Cannot play: ${ex.message}", true) }
+                }
+            } catch (ex: Exception) {
+                ui { refresh(); toast("Error: ${ex.message}", true) }
+            }
+        }
+    }
+
+    // ---- MP3 export ----------------------------------------------------------------------
+
+    private fun mp3Click() {
+        if (busy) return
+        if (mkh == null || mkp == null || entries.isEmpty()) return toast("Open an archive first")
+        val base = if (checked.isEmpty()) entries else checked.sorted().map { entries[it] }
+        pendingMp3 = base.filter { Snd.isAudio(it.name) }
+        if (pendingMp3.isEmpty()) return toast("No .snd / .ogg files selected")
+        pickMp3Dir.launch(null)
+    }
+
+    private fun exportMp3(tree: Uri) {
+        val dest = DocumentFile.fromTreeUri(this, tree) ?: return toast("Cannot open folder")
+        val items = pendingMp3
+        stopPlayback()
+        busy = true
+        io.execute {
+            try {
+                items.forEachIndexed { i, e ->
+                    reportProgress("Converting", i, items.size, e.name)
+                    val ogg = File(cacheDir, "conv.ogg")
+                    val wav = File(cacheDir, "conv.wav")
+                    val mp3 = File(cacheDir, "conv.mp3")
+                    try {
+                        mp3.delete()
+                        Mkp.extractToFile(contentResolver, mkp!!, e, ogg)
+                        val rate = Snd.decodeToWav(ogg, wav)
+                        Snd.wavToMp3(wav, mp3, rate)
+                        val outName = e.name.substringBeforeLast('.') + ".mp3"
+                        dest.findFile(outName)?.delete()
+                        val df = dest.createFile("audio/mpeg", outName) ?: throw java.io.IOException("Cannot create $outName")
+                        contentResolver.openOutputStream(df.uri)?.use { o -> mp3.inputStream().use { it.copyTo(o) } }
+                    } finally {
+                        ogg.delete(); wav.delete(); mp3.delete()
+                    }
+                }
+                finish("Converted ${items.size} file(s) to MP3")
+            } catch (ex: Exception) {
+                finish("Error: ${ex.message}", true)
+            }
+        }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        player?.release(); player = null
+        io.shutdown()
+    }
+
     private fun loadIndex() {
+        stopPlayback()
         busy = true; subtitle.text = "Reading…"
         io.execute {
             try {

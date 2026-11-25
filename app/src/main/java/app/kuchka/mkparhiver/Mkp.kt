@@ -6,6 +6,7 @@ import android.os.ParcelFileDescriptor
 import androidx.documentfile.provider.DocumentFile
 import java.io.BufferedOutputStream
 import java.io.EOFException
+import java.io.File
 import java.io.IOException
 
 /**
@@ -92,6 +93,25 @@ object Mkp {
             }
         }
         onProgress(entries.size, entries.size, "")
+    }
+
+    /** Decrypts a single entry into a local file (used for playback / conversion). */
+    fun extractToFile(cr: ContentResolver, mkp: Uri, e: Entry, out: File) {
+        val pfd = cr.openFileDescriptor(mkp, "r") ?: throw IOException("Cannot open .mkp")
+        ParcelFileDescriptor.AutoCloseInputStream(pfd).use { ins ->
+            ins.channel.position(e.offset)
+            val buf = ByteArray(64 * 1024)
+            out.outputStream().use { o ->
+                var left = e.size
+                while (left > 0) {
+                    val n = ins.read(buf, 0, minOf(buf.size.toLong(), left).toInt())
+                    if (n < 0) throw EOFException("Unexpected end of .mkp in ${e.name}")
+                    xor(buf, n)
+                    o.write(buf, 0, n)
+                    left -= n
+                }
+            }
+        }
     }
 
     fun pack(
