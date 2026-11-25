@@ -26,5 +26,5 @@ dependencies {
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.activity:activity-ktx:1.9.2")
     implementation("androidx.documentfile:documentfile:1.0.1")
-    implementation("com.github.Jay-Goo:Mp3Converter:0.0.34") // LAME 3.100 (MP3 export)
+    implementation("com.github.Jay-Goo:Mp3Converter:v0.0.3") // LAME 3.100 (MP3 export)
 }
