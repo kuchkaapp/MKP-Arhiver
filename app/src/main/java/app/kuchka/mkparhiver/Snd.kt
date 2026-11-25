@@ -98,6 +98,8 @@ object Snd {
         return rate
     }
 
+    fun mp3Available(): Boolean = try { converterClass(); true } catch (_: IOException) { false }
+
     private fun converterClass(): Class<*> {
         val names = listOf(
             "com.jaygoo.library.converter.Mp3Converter",

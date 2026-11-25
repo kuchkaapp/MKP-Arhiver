@@ -395,25 +395,34 @@ class MainActivity : ComponentActivity() {
         busy = true
         io.execute {
             try {
+                val mp3 = Snd.mp3Available()
                 items.forEachIndexed { i, e ->
-                    reportProgress("Converting", i, items.size, e.name)
+                    reportProgress(if (mp3) "Converting" else "Exporting", i, items.size, e.name)
                     val ogg = File(cacheDir, "conv.ogg")
                     val wav = File(cacheDir, "conv.wav")
-                    val mp3 = File(cacheDir, "conv.mp3")
+                    val out = File(cacheDir, "conv.mp3")
                     try {
-                        mp3.delete()
+                        out.delete()
                         Mkp.extractToFile(contentResolver, mkp!!, e, ogg)
-                        val rate = Snd.decodeToWav(ogg, wav)
-                        Snd.wavToMp3(wav, mp3, rate)
-                        val outName = e.name.substringBeforeLast('.') + ".mp3"
+                        val outName: String
+                        val src: File
+                        if (mp3) {
+                            val rate = Snd.decodeToWav(ogg, wav)
+                            Snd.wavToMp3(wav, out, rate)
+                            outName = e.name.substringBeforeLast('.') + ".mp3"; src = out
+                        } else {
+                            outName = e.name.substringBeforeLast('.') + ".ogg"; src = ogg
+                        }
                         dest.findFile(outName)?.delete()
-                        val df = dest.createFile("audio/mpeg", outName) ?: throw java.io.IOException("Cannot create $outName")
-                        contentResolver.openOutputStream(df.uri)?.use { o -> mp3.inputStream().use { it.copyTo(o) } }
+                        val df = dest.createFile(if (mp3) "audio/mpeg" else "audio/ogg", outName)
+                            ?: throw java.io.IOException("Cannot create $outName")
+                        contentResolver.openOutputStream(df.uri)?.use { o -> src.inputStream().use { it.copyTo(o) } }
                     } finally {
-                        ogg.delete(); wav.delete(); mp3.delete()
+                        ogg.delete(); wav.delete(); out.delete()
                     }
                 }
-                finish("Converted ${items.size} file(s) to MP3")
+                finish(if (mp3) "Converted ${items.size} file(s) to MP3"
+                       else "MP3 encoder not bundled: exported ${items.size} file(s) as .ogg (same audio)", !mp3)
             } catch (ex: Exception) {
                 finish("Error: ${ex.message}", true)
             }

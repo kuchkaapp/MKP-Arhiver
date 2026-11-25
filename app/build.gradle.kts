@@ -26,5 +26,6 @@ dependencies {
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.activity:activity-ktx:1.9.2")
     implementation("androidx.documentfile:documentfile:1.0.1")
-    implementation("com.github.Jay-Goo:Mp3Converter:v0.0.3") // LAME 3.100 (MP3 export)
+    // Optional MP3 encoder (not on JitPack under this coordinate at the moment): enable with -Pmp3=<coordinate>
+    (findProperty("mp3") as String?)?.let { implementation(it) }
 }
